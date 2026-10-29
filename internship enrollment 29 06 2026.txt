@@ -1,0 +1,341 @@
+// ============================================================
+// SHINE CRAFT TECHNOLOGY
+// File: EnrollmentCombined.gs  v4 (FIXED)
+//
+// ✅ THIS SINGLE SCRIPT GOES IN YOUR RESPONSE SHEET:
+//     https://docs.google.com/spreadsheets/d/1A-7mAqIXlwZWcSiPpztKtspwnSnO52sQpebMYWSSMXI/edit?gid=1292702069#gid=1292702069
+//
+// WHAT THIS DOES:
+//   1. Receives form data from your website → saves to Enrollment tab
+//   2. Handles file uploads → saves to Google Drive
+//   3. When a new row is submitted → mirrors it to another Google Spreadsheet
+//
+// STEPS AFTER PASTING:
+//   Step 1: Confirm all config values below are correct
+//   Step 2: Run installEnrollmentTrigger() once in Apps Script
+// ============================================================
+
+
+// ─────────────────────────────────────────────────────────────
+// ██  CONFIG ██
+// ─────────────────────────────────────────────────────────────
+
+// This is the spreadsheet where THIS script is installed
+// (the response sheet that receives Google Form submissions)
+const SHEET_ID         = "1A-7mAqIXlwZWcSiPpztKtspwnSnO52sQpebMYWSSMXI";
+
+const MASTER_FOLDER_ID = "1l388pEHuN6jU8tFZWC8ALOfJ36TKwEhRO7GkBqTb1mjuSPORhu0BnRZNL9RVgUwj1-jCIUvM";
+
+// The tab in THIS sheet where website form submissions are saved
+const SHEET_NAME       = "Enrollment";
+
+// ─────────────────────────────────────────────────────────────
+// ██  FORM DATA CONFIG ██
+// ─────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────
+// ██  COLUMN ORDER — website form submissions ██
+// ─────────────────────────────────────────────────────────────
+
+const COLUMN_ORDER = [
+  "submittedAt",
+  "fullName", "gender", "email", "phone", "currentLocation",
+  "educationStatus",
+  "schoolRegNumber", "schoolGroup", "schoolName", "schoolAddress", "schoolGraduationYear",
+  "collegeRegNumber", "courseName", "collegeName", "collegeAddress", "collegeGraduationYear",
+  "internshipDomains", "internshipDomainOther", "internshipType",
+  "preferredStartDate", "internshipDuration",
+  "technicalSkills", "projectDetails", "profileLink", "resumeLinks",
+  "hearAboutUs", "hearAboutUsOther", "expectations", "declaration",
+  "acceptTerms",
+  "driveFolderLink",
+];
+
+var ENROLLMENT_TAB_NAME = 'Enrollment';
+
+const MIRROR_SOURCE_TAB = ENROLLMENT_TAB_NAME;
+const MIRROR_TARGET_SS_ID = '1HsRXH-3r_ZGKJ9ghWbChnkXXWRVGYXxsh9eIJifxf1o';
+const MIRROR_TARGET_TAB = 'internship whatsapp automation';
+
+
+// ============================================================
+//  ██  SECTION 1 — WEB APP ENTRY POINTS  ██
+// ============================================================
+
+function doPost(e) {
+  const output = ContentService.createTextOutput();
+  output.setMimeType(ContentService.MimeType.JSON);
+
+  try {
+    const payload = JSON.parse(e.postData.contents);
+
+    if (payload.action === "uploadFiles") {
+      output.setContent(JSON.stringify(handleFileUpload(payload)));
+    } else {
+      output.setContent(JSON.stringify(handleFormSubmission(payload)));
+    }
+
+  } catch (err) {
+    output.setContent(JSON.stringify({ success: false, error: err.message }));
+  }
+
+  return output;
+}
+
+function doGet(e) {
+  return ContentService
+    .createTextOutput(JSON.stringify({ status: "ok" }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+
+// ============================================================
+//  ██  SECTION 2 — FILE UPLOAD HANDLER  ██
+// ============================================================
+
+function handleFileUpload(payload) {
+  const { userName, files, folderId } = payload;
+
+  if (!files || files.length === 0) {
+    return { success: false, error: "No files provided" };
+  }
+
+  const masterFolder = DriveApp.getFolderById(MASTER_FOLDER_ID);
+
+  let internFolder;
+  if (folderId) {
+    try { internFolder = DriveApp.getFolderById(folderId); }
+    catch (_) { internFolder = null; }
+  }
+
+  if (!internFolder) {
+    const safeName  = (userName || "Unknown").replace(/[^a-zA-Z0-9 _-]/g, "").trim();
+    const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss");
+    internFolder    = masterFolder.createFolder(safeName + "_" + timestamp);
+  }
+
+  const links = [];
+  for (const file of files) {
+    const decoded  = Utilities.base64Decode(file.data);
+    const blob     = Utilities.newBlob(decoded, file.mimeType, file.name);
+    const uploaded = internFolder.createFile(blob);
+    uploaded.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    links.push({ name: file.name, url: uploaded.getUrl(), id: uploaded.getId() });
+  }
+
+  return {
+    success  : true,
+    links    : links,
+    folderId : internFolder.getId(),
+    folderUrl: internFolder.getUrl(),
+  };
+}
+
+
+// ============================================================
+//  ██  SECTION 3 — WEBSITE FORM SUBMISSION HANDLER  ██
+// ============================================================
+
+function handleFormSubmission(data) {
+  const ss  = SpreadsheetApp.openById(SHEET_ID);
+  let sheet = ss.getSheetByName(SHEET_NAME);
+
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_NAME);
+    sheet.appendRow(COLUMN_ORDER);
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, COLUMN_ORDER.length).setFontWeight("bold");
+  }
+
+  const firstRow = sheet.getRange(1, 1, 1, COLUMN_ORDER.length).getValues()[0];
+  if (firstRow[0] !== COLUMN_ORDER[0]) {
+    sheet.insertRowBefore(1);
+    sheet.getRange(1, 1, 1, COLUMN_ORDER.length).setValues([COLUMN_ORDER]);
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, COLUMN_ORDER.length).setFontWeight("bold");
+  }
+
+  data.submittedAt = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
+
+  if (Array.isArray(data.internshipDomains)) {
+    data.internshipDomains = data.internshipDomains.join(", ");
+  }
+  if (Array.isArray(data.documentLinks)) {
+    data.resumeLinks = data.documentLinks.map(l => (l.url || l)).join("\n");
+  }
+  if (data.driveFolderId) {
+    data.driveFolderLink = "https://drive.google.com/drive/folders/" + data.driveFolderId;
+  }
+
+  const row = COLUMN_ORDER.map(key => {
+    const val = data[key];
+    if (val === undefined || val === null) return "";
+    if (typeof val === "boolean") return val ? "Yes" : "No";
+    return String(val);
+  });
+
+  sheet.appendRow(row);
+  const mirrorResult = _mirrorNewRowToTarget(sheet.getLastRow());
+  if (!mirrorResult.success) {
+    Logger.log('[Enrollment] Mirror failed: ' + mirrorResult.error);
+  }
+
+  return { success: true };
+}
+
+
+// ============================================================
+//  ██  SECTION 4 — TRIGGER HANDLERS  ██
+// ============================================================
+
+function onEnrollmentFormSubmit(e) {
+  try {
+    Logger.log('[Enrollment] Google Form submit trigger fired.');
+    var range    = e && e.range ? e.range : null;
+    var rowIndex = range ? range.getRow() : null;
+
+    var mirrorResult = _mirrorNewRowToTarget(rowIndex || 0);
+    if (!mirrorResult.success) {
+      Logger.log('[Enrollment] Mirror failed: ' + mirrorResult.error);
+    }
+
+  } catch (err) {
+    Logger.log('[Enrollment] onEnrollmentFormSubmit error: ' + err.message);
+  }
+}
+
+function _mirrorNewRowToTarget(rowIndex) {
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000);
+    var ss = SpreadsheetApp.openById(SHEET_ID);
+    var sourceSheet = ss.getSheetByName(MIRROR_SOURCE_TAB) || ss.getSheetByName(SHEET_NAME);
+    if (!sourceSheet) {
+      return { success: false, error: 'Source sheet not found' };
+    }
+
+    var targetRow = rowIndex && rowIndex >= 2 ? rowIndex : sourceSheet.getLastRow();
+    if (targetRow < 2) {
+      return { success: false, error: 'No valid row to mirror' };
+    }
+
+    var sourceLastColumn = sourceSheet.getLastColumn();
+    if (sourceLastColumn < 1) {
+      return { success: false, error: 'Source sheet has no columns' };
+    }
+
+    var sourceHeaders = sourceSheet.getRange(1, 1, 1, sourceLastColumn).getValues()[0];
+    var sourceValues = sourceSheet.getRange(targetRow, 1, 1, sourceLastColumn).getValues()[0];
+    if (!sourceValues || sourceValues.every(function(v) { return v === ''; })) {
+      return { success: false, error: 'Row is empty' };
+    }
+
+    var targetSS = SpreadsheetApp.openById(MIRROR_TARGET_SS_ID);
+    var targetSheet = targetSS.getSheetByName(MIRROR_TARGET_TAB);
+    if (!targetSheet) {
+      targetSheet = targetSS.insertSheet(MIRROR_TARGET_TAB);
+    }
+
+    var targetLastColumn = targetSheet.getLastColumn();
+    if (targetSheet.getLastRow() === 0 || targetLastColumn === 0) {
+      targetSheet.getRange(1, 1, 1, sourceHeaders.length).setValues([sourceHeaders]);
+      targetSheet.setFrozenRows(1);
+      targetLastColumn = sourceHeaders.length;
+    }
+
+    var targetHeaders = targetSheet.getRange(1, 1, 1, targetLastColumn).getValues()[0];
+    var sourceIdentifier = sourceValues[0] || (sourceValues[4] + '|' + sourceValues[1] + '|' + targetRow);
+    var targetIdentifierColumn = targetHeaders.findIndex(function(header) {
+      return String(header).trim().toLowerCase() === String(sourceHeaders[0]).trim().toLowerCase();
+    });
+    if (targetIdentifierColumn < 0) targetIdentifierColumn = 0;
+
+    var existingValues = targetSheet.getLastRow() > 1
+      ? targetSheet.getRange(2, targetIdentifierColumn + 1, targetSheet.getLastRow() - 1, 1).getValues()
+      : [];
+    var alreadyExists = existingValues.some(function(row) {
+      return row[0] && row[0].toString() === sourceIdentifier.toString();
+    });
+
+    if (!alreadyExists) {
+      var targetRowValues = targetHeaders.map(function(header) {
+        var sourceColumn = sourceHeaders.findIndex(function(sourceHeader) {
+          return String(sourceHeader).trim().toLowerCase() === String(header).trim().toLowerCase();
+        });
+        return sourceColumn >= 0 ? sourceValues[sourceColumn] : '';
+      });
+      if (targetIdentifierColumn >= targetRowValues.length) {
+        targetSheet.insertColumnsAfter(targetSheet.getMaxColumns(), targetIdentifierColumn + 1 - targetRowValues.length);
+        targetRowValues.length = targetIdentifierColumn + 1;
+      }
+      targetRowValues[targetIdentifierColumn] = sourceIdentifier;
+      targetSheet.getRange(targetSheet.getLastRow() + 1, 1, 1, targetRowValues.length).setValues([targetRowValues]);
+      Logger.log('[Enrollment] Mirrored row ' + targetRow + ' from "' + sourceSheet.getName() + '" to "' + targetSheet.getName() + '".');
+    } else {
+      Logger.log('[Enrollment] Row ' + targetRow + ' already exists in target sheet; skipped duplicate.');
+    }
+
+    return { success: true, sourceSheet: sourceSheet.getName(), targetSheet: targetSheet.getName(), rowIndex: targetRow };
+  } catch (err) {
+    Logger.log('[Enrollment] _mirrorNewRowToTarget error: ' + err.message);
+    return { success: false, error: err.message };
+  } finally {
+    if (lock.hasLock()) lock.releaseLock();
+  }
+}
+
+function debugMirrorRow(rowIndex) {
+  try {
+    var ss = SpreadsheetApp.openById(SHEET_ID);
+    var sourceSheet = ss.getSheetByName(MIRROR_SOURCE_TAB) || ss.getSheetByName(SHEET_NAME);
+    var actualRow = rowIndex && rowIndex >= 2 ? rowIndex : sourceSheet.getLastRow();
+    var values = sourceSheet.getRange(actualRow, 1, 1, Math.min(sourceSheet.getLastColumn(), 8)).getValues()[0];
+    var targetSS = SpreadsheetApp.openById(MIRROR_TARGET_SS_ID);
+    var targetSheet = targetSS.getSheetByName(MIRROR_TARGET_TAB);
+
+    Logger.log('[Enrollment] Debug mirror -> sourceSheet="' + sourceSheet.getName() + '", row=' + actualRow + ', targetSheet="' + (targetSheet ? targetSheet.getName() : 'NOT FOUND') + '"');
+    Logger.log('[Enrollment] Debug mirror row values: ' + JSON.stringify(values));
+
+    SpreadsheetApp.getUi().alert(
+      'Mirror debug\n\n' +
+      'Source sheet: ' + sourceSheet.getName() + '\n' +
+      'Row: ' + actualRow + '\n' +
+      'Target sheet: ' + (targetSheet ? targetSheet.getName() : 'NOT FOUND')
+    );
+  } catch (err) {
+    Logger.log('[Enrollment] debugMirrorRow error: ' + err.message);
+  }
+}
+
+// ============================================================
+//  ██  SECTION 5 — SETUP & TEST UTILITIES  ██
+// ============================================================
+
+// ▶ Installs exactly one trigger for automatic mirroring of new form rows.
+function installEnrollmentTrigger() {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(function(trigger) {
+    if (trigger.getHandlerFunction() === 'onEnrollmentFormSubmit') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  ScriptApp.newTrigger('onEnrollmentFormSubmit')
+    .forSpreadsheet(ss)
+    .onFormSubmit()
+    .create();
+  Logger.log('[Enrollment] Automatic mirroring trigger installed.');
+}
+
+// ▶ Verifies tab names are correct before you go live
+function debugTabNames() {
+  var ss    = SpreadsheetApp.openById(SHEET_ID);
+  var tabs  = ss.getSheets().map(function(s){ return '"' + s.getName() + '"'; }).join('\n');
+  Logger.log('[Debug] Tabs in this sheet:\n' + tabs);
+
+  try {
+    SpreadsheetApp.getUi().alert('Tabs in this sheet:\n\n' + tabs);
+  } catch(u) {}
+}
+
+
